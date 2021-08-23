@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 void i2c_init(void);
-bool i2c_write_byte(uint8_t byte);
-bool i2c_read_byte(uint8_t *received_byte);
+bool i2c_read_addr16_data8(uint16_t addr, uint8_t *data);
+bool i2c_write_addr16_data8(uint16_t addr, uint8_t data);
 
 #endif /* I2C_H */

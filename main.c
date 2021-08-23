@@ -14,11 +14,11 @@ int main(void)
 {
     msp430_init();
     i2c_init();
-    uint8_t received_byte = 0;
+    uint8_t data = 0;
 
     while (1) {
-        i2c_read_byte(&received_byte);
-        i2c_write_byte(received_byte);
+        i2c_write_addr16_data8(0x10A, 13);
+        i2c_read_addr16_data8(0x10A, &data);
     }
 
     return 0;

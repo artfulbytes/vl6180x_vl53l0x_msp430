@@ -1,13 +1,13 @@
 #include "i2c.h"
 #include <msp430.h>
 
-bool i2c_write_byte(uint8_t byte)
+bool i2c_read_addr16_data8(uint16_t addr, uint8_t *data)
 {
     bool success = false;
 
     UCB0CTL1 |= UCTXSTT + UCTR; /* Set up master as TX and send start condition */
     /* Note, when master is TX, we must write to TXBUF before waiting for UCTXSTT */
-    UCB0TXBUF = byte; /* Fill the transmit buffer with the byte we want to send */
+    UCB0TXBUF = (addr >> 8) & 0xFF; /* Send the most significant byte of the 16-bit address */
 
     while (UCB0CTL1 & UCTXSTT); /* Wait for start condition to be sent */
     success = !(UCB0STAT & UCNACKIFG);
@@ -15,30 +15,62 @@ bool i2c_write_byte(uint8_t byte)
         while (!(IFG2 & UCB0TXIFG)); /* Wait for byte to be sent */
         success = !(UCB0STAT & UCNACKIFG);
     }
+    if (success) {
+        UCB0TXBUF = addr & 0xFF; /* Send the least significant byte of the 16-bit address */
+        while (!(IFG2 & UCB0TXIFG)); /* Wait for byte to be sent */
+        success = !(UCB0STAT & UCNACKIFG);
+    }
 
-    UCB0CTL1 |= UCTXSTP; /* Send the stop condition */
-    while (UCB0CTL1 & UCTXSTP); /* Wait for stop condition to be sent */
-    success = !(UCB0STAT & UCNACKIFG);
+    /* Address sent, now configure as receiver and get the value */
+    if (success) {
+        UCB0CTL1 &= ~UCTR; /* Set as a receiver */
+        UCB0CTL1 |= UCTXSTT; /* Send (repeating) start condition (including address of slave) */
+        while (UCB0CTL1 & UCTXSTT); /* Wait for start condition to be sent */
+        success = !(UCB0STAT & UCNACKIFG);
+
+        UCB0CTL1 |= UCTXSTP; /* Only receive one byte */
+        while ((UCB0CTL1 & UCTXSTP));
+
+        success &= !(UCB0STAT & UCNACKIFG);
+        if (success) {
+            while ((IFG2 & UCB0RXIFG) == 0); /* Wait for byte before reading the buffer */
+            *data = UCB0RXBUF; /* RX interrupt is cleared automatically afterwards */
+        }
+    } else {
+        /* We should always end with a stop condition */
+        UCB0CTL1 |= UCTXSTP; /* Send the stop condition */
+        while (UCB0CTL1 & UCTXSTP); /* Wait for stop condition to be sent */
+    }
+
     return success;
 }
 
-bool i2c_read_byte(uint8_t *received_byte)
+bool i2c_write_addr16_data8(uint16_t addr, uint8_t data)
 {
     bool success = false;
 
-    UCB0CTL1 &= ~UCTR; /* Set up master as RX */
-    UCB0CTL1 |= UCTXSTT; /* Send start condition */
+    UCB0CTL1 |= UCTXSTT + UCTR; /* Set up master as TX and send start condition */
+    /* Note, when master is TX, we must write to TXBUF before waiting for UCTXSTT */
+    UCB0TXBUF = (addr >> 8) & 0xFF; /* Send the most significant byte of the 16-bit address */
+
     while (UCB0CTL1 & UCTXSTT); /* Wait for start condition to be sent */
     success = !(UCB0STAT & UCNACKIFG);
-
-    UCB0CTL1 |= UCTXSTP; /* Send stop condition because we only want to read one byte */
-    while (UCB0CTL1 & UCTXSTP);
-
-    success &= !(UCB0STAT & UCNACKIFG);
     if (success) {
-        while ((IFG2 & UCB0RXIFG) == 0); /* Wait for byte before reading the buffer */
-        *received_byte = UCB0RXBUF; /* RX interrupt is cleared automatically afterwards */
+        while (!(IFG2 & UCB0TXIFG)); /* Wait for byte to be sent */
+        success = !(UCB0STAT & UCNACKIFG);
     }
+    if (success) {
+        UCB0TXBUF = addr & 0xFF; /* Send the least significant byte of the 16-bit address */
+        while (!(IFG2 & UCB0TXIFG)); /* Wait for byte to be sent */
+        success = !(UCB0STAT & UCNACKIFG);
+    }
+    if (success) {
+        UCB0TXBUF = data; /* Send the value to write */
+        while (!(IFG2 & UCB0TXIFG)); /* Wait for byte to be sent */
+        success = !(UCB0STAT & UCNACKIFG);
+    }
+    UCB0CTL1 |= UCTXSTP; /* Send stop condition */
+    while (UCB0CTL1 & UCTXSTP); /* Wait for stop condition to be sent */
     return success;
 }
 
