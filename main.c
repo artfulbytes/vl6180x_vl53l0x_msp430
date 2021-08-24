@@ -1,5 +1,6 @@
 #include <msp430.h>
 #include "drivers/i2c.h"
+#include "drivers/vl6180x.h"
 
 static void msp430_init()
 {
@@ -14,11 +15,11 @@ int main(void)
 {
     msp430_init();
     i2c_init();
-    uint8_t data = 0;
+    vl6180x_init();
+    uint8_t range = 0;
 
     while (1) {
-        i2c_write_addr16_data8(0x10A, 13);
-        i2c_read_addr16_data8(0x10A, &data);
+        vl6180x_read_range_single(&range);
     }
 
     return 0;
