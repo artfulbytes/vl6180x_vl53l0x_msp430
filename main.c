@@ -15,11 +15,17 @@ int main(void)
 {
     msp430_init();
     i2c_init();
-    vl6180x_init();
-    uint8_t range = 0;
 
-    while (1) {
-        vl6180x_read_range_single(&range);
+    bool success = vl6180x_init();
+    uint8_t ranges[3] = { 0 };
+    while (success) {
+        success = vl6180x_read_range_single(VL6180X_IDX_FIRST, &ranges[0]);
+#ifdef VL6180X_SECOND
+        success &= vl6180x_read_range_single(VL6180X_IDX_SECOND, &ranges[1]);
+#endif
+#ifdef VL6180X_THIRD
+        success &= vl6180x_read_range_single(VL6180X_IDX_THIRD, &ranges[2]);
+#endif
     }
 
     return 0;

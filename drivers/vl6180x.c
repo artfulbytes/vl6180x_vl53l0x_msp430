@@ -1,5 +1,6 @@
 #include "vl6180x.h"
 #include "i2c.h"
+#include "gpio.h"
 
 #define REG_FRESH_OUT_OF_RESET (0x0016)
 #define REG_AVERAGING_SAMPLE_PERIOD (0x010A)
@@ -19,10 +20,30 @@
 #define REG_INTERRUPT_CLEAR (0x015)
 #define REG_SLAVE_DEVICE_ADDRESS (0x212)
 
+#define VL6180X_DEFAULT_ADDRESS (0x29)
+
+typedef struct vl6180x_info
+{
+    uint8_t addr;
+    gpio_t xshut_gpio;
+} vl6180x_info_t;
+
+static const vl6180x_info_t vl6180x_infos[] =
+{
+    [VL6180X_IDX_FIRST] = { .addr = 0x30, .xshut_gpio = GPIO_XSHUT_FIRST },
+#ifdef VL6180X_SECOND
+    [VL6180X_IDX_SECOND] = { .addr = 0x31, .xshut_gpio = GPIO_XSHUT_SECOND },
+#endif
+#ifdef VL6180X_THIRD
+    [VL6180X_IDX_THIRD] = { .addr = 0x32, .xshut_gpio = GPIO_XSHUT_THIRD },
+#endif
+};
+
 /**
  * Waits for the device to be booted by reading the fresh out of reset
  * register.
  * NOTE: Blocks indefinitely if device is not freshly booted.
+ * NOTE: Slave address must already be configured.
  */
 static bool wait_device_booted()
 {
@@ -36,6 +57,7 @@ static bool wait_device_booted()
 
 /**
  * Writes the settings recommended in the AN4545 application note.
+ * NOTE: Slave address must already be configured.
  */
 static bool write_standard_ranging_settings()
 {
@@ -72,6 +94,7 @@ static bool write_standard_ranging_settings()
     return success;
 }
 
+/* NOTE: Slave address must already be configured. */
 static bool configure_default()
 {
     bool success = false;
@@ -98,10 +121,126 @@ static bool configure_default()
     return success;
 }
 
-bool vl6180x_read_range_single(uint8_t *range)
+static bool configure_address(uint8_t addr)
+{
+    /* 7-bit address */
+    return i2c_write_addr16_data8(REG_SLAVE_DEVICE_ADDRESS, addr & 0x7F);
+}
+
+/**
+ * Sets the sensor in hardware standby by flipping the XSHUT pin.
+ */
+static void set_hardware_standby(vl6180x_idx_t idx, bool enable)
+{
+    gpio_set_output(vl6180x_infos[idx].xshut_gpio, !enable);
+}
+
+/**
+ * Configures the GPIOs used for the XSHUT pin.
+ * Output low by default means the sensors will be in
+ * hardware standby after this function is called.
+ *
+ * NOTE: The pins are hard-coded to P1.0, P1.1, and P1.2.
+ **/
+static void configure_gpio()
+{
+    gpio_init();
+    gpio_set_output(GPIO_XSHUT_FIRST, false);
+    gpio_set_output(GPIO_XSHUT_SECOND, false);
+    gpio_set_output(GPIO_XSHUT_THIRD, false);
+}
+
+/**
+ * Sets the address of a single VL6180X sensor.
+ * This functions assumes that all non-configured VL6180X are still
+ * in hardware standby.
+ **/
+static bool init_address(vl6180x_idx_t idx)
+{
+    set_hardware_standby(idx, false);
+    i2c_set_slave_address(VL6180X_DEFAULT_ADDRESS);
+
+    /* 400 us delay according to the vl6180x datasheet */
+    __delay_cycles(400);
+
+    if (!wait_device_booted()) {
+        return false;
+    }
+
+    if (!configure_address(vl6180x_infos[idx].addr)) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Initializes the sensors by putting them in hw standby and then
+ * waking them up one-by-one as described in AN4478.
+ */
+static bool init_addresses()
+{
+    /* Puts all sensors in hardware standby */
+    configure_gpio();
+
+    /* Wake each sensor up one by one and set a unique address for each one */
+    if (!init_address(VL6180X_IDX_FIRST)) {
+        return false;
+    }
+#ifdef VL6180X_SECOND
+    if (!init_address(VL6180X_IDX_SECOND)) {
+        return false;
+    }
+#endif
+#ifdef VL6180X_THIRD
+    if (!init_address(VL6180X_IDX_THIRD)) {
+        return false;
+    }
+#endif
+
+    return true;
+}
+
+static bool init_config(vl6180x_idx_t idx)
+{
+    i2c_set_slave_address(vl6180x_infos[idx].addr);
+    if (!write_standard_ranging_settings()) {
+        return false;
+    }
+    if (!configure_default()) {
+        return false;
+    }
+    /* No longer fresh out of reset */
+    if (!i2c_write_addr16_data8(REG_FRESH_OUT_OF_RESET, 0)) {
+        return false;
+    }
+    return true;
+}
+
+bool vl6180x_init()
+{
+    if (!init_addresses()) {
+        return false;
+    }
+    if (!init_config(VL6180X_IDX_FIRST)) {
+        return false;
+    }
+#ifdef VL6180X_SECOND
+    if (!init_config(VL6180X_IDX_SECOND)) {
+        return false;
+    }
+#endif
+#ifdef VL6180X_THIRD
+    if (!init_config(VL6180X_IDX_THIRD)) {
+        return false;
+    }
+#endif
+    return true;
+}
+
+bool vl6180x_read_range_single(vl6180x_idx_t idx, uint8_t *range)
 {
     bool success = false;
-
+    i2c_set_slave_address(vl6180x_infos[idx].addr);
     /* Wait device ready */
     uint8_t result_range_status = 0;
     do {
@@ -132,27 +271,5 @@ bool vl6180x_read_range_single(uint8_t *range)
 
     /* Clear interrupt */
     success = i2c_write_addr16_data8(REG_INTERRUPT_CLEAR, 0x07);
-    return success;
-}
-
-bool vl6180x_init()
-{
-    bool success = false;
-
-    if (!wait_device_booted()) {
-        return false;
-    }
-
-    if (!write_standard_ranging_settings()) {
-        return false;
-    }
-
-    if (!configure_default()) {
-        return false;
-    }
-
-    /* No longer fresh out of reset */
-    success = i2c_write_addr16_data8(REG_FRESH_OUT_OF_RESET, 0);
-
     return success;
 }
