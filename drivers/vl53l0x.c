@@ -1,5 +1,6 @@
 #include "vl53l0x.h"
 #include "i2c.h"
+#include "gpio.h"
 
 #define REG_IDENTIFICATION_MODEL_ID (0xC0)
 #define REG_VHV_CONFIG_PAD_SCL_SDA_EXTSUP_HV (0x89)
@@ -16,8 +17,7 @@
 #define REG_SYSRANGE_START (0x00)
 #define REG_GLOBAL_CONFIG_SPAD_ENABLES_REF_0 (0xB0)
 #define REG_RESULT_RANGE_STATUS (0x14)
-
-#define VL53L0X_EXPECTED_DEVICE_ID (0xEE)
+#define REG_SLAVE_DEVICE_ADDRESS (0x8A)
 
 #define RANGE_SEQUENCE_STEP_TCC (0x10) /* Target CentreCheck */
 #define RANGE_SEQUENCE_STEP_MSRC (0x04) /* Minimum Signal Rate Check */
@@ -25,11 +25,31 @@
 #define RANGE_SEQUENCE_STEP_PRE_RANGE (0x40)
 #define RANGE_SEQUENCE_STEP_FINAL_RANGE (0x80)
 
+#define VL53L0X_EXPECTED_DEVICE_ID (0xEE)
+#define VL53L0X_DEFAULT_ADDRESS (0x29)
+
+typedef struct vl53l0x_info
+{
+    uint8_t addr;
+    gpio_t xshut_gpio;
+} vl53l0x_info_t;
+
 typedef enum
 {
     CALIBRATION_TYPE_VHV,
     CALIBRATION_TYPE_PHASE
 } calibration_type_t;
+
+static const vl53l0x_info_t vl53l0x_infos[] =
+{
+    [VL53L0X_IDX_FIRST] = { .addr = 0x30, .xshut_gpio = GPIO_XSHUT_FIRST },
+#ifdef VL53L0X_SECOND
+    [VL53L0X_IDX_SECOND] = { .addr = 0x31, .xshut_gpio = GPIO_XSHUT_SECOND },
+#endif
+#ifdef VL53L0X_THIRD
+    [VL53L0X_IDX_THIRD] = { .addr = 0x32, .xshut_gpio = GPIO_XSHUT_THIRD },
+#endif
+};
 
 static uint8_t stop_variable = 0;
 
@@ -69,6 +89,7 @@ static bool data_init()
     success &= i2c_write_addr8_data8(0x80, 0x01);
     success &= i2c_write_addr8_data8(0xFF, 0x01);
     success &= i2c_write_addr8_data8(0x00, 0x00);
+    /* It may be unnecessary to retrieve the stop variable for each sensor */
     success &= i2c_read_addr8_data8(0x91, &stop_variable);
     success &= i2c_write_addr8_data8(0x00, 0x01);
     success &= i2c_write_addr8_data8(0xFF, 0x00);
@@ -280,11 +301,87 @@ static bool perform_ref_calibration()
     return true;
 }
 
-bool vl53l0x_init()
+static bool configure_address(uint8_t addr)
 {
+    /* 7-bit address */
+    return i2c_write_addr8_data8(REG_SLAVE_DEVICE_ADDRESS, addr & 0x7F);
+}
+
+/**
+ * Sets the sensor in hardware standby by flipping the XSHUT pin.
+ */
+static void set_hardware_standby(vl53l0x_idx_t idx, bool enable)
+{
+    gpio_set_output(vl53l0x_infos[idx].xshut_gpio, !enable);
+}
+
+/**
+ * Configures the GPIOs used for the XSHUT pin.
+ * Output low by default means the sensors will be in
+ * hardware standby after this function is called.
+ *
+ * NOTE: The pins are hard-coded to P1.0, P1.1, and P1.2.
+ **/
+static void configure_gpio()
+{
+    gpio_init();
+    gpio_set_output(GPIO_XSHUT_FIRST, false);
+    gpio_set_output(GPIO_XSHUT_SECOND, false);
+    gpio_set_output(GPIO_XSHUT_THIRD, false);
+}
+
+/* Sets the address of a single VL53L0X sensor.
+ * This functions assumes that all non-configured VL53L0X are still
+ * in hardware standby. */
+static bool init_address(vl53l0x_idx_t idx)
+{
+    set_hardware_standby(idx, false);
+    i2c_set_slave_address(VL53L0X_DEFAULT_ADDRESS);
+
+    /* The datasheet doesn't say how long we must wait to leave hw standby,
+     * but using the same delay as vl6180x seems to work fine. */
+    __delay_cycles(400);
+
     if (!device_is_booted()) {
         return false;
     }
+
+    if (!configure_address(vl53l0x_infos[idx].addr)) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Initializes the sensors by putting them in hw standby and then
+ * waking them up one-by-one as described in AN4846.
+ */
+static bool init_addresses()
+{
+    /* Puts all sensors in hardware standby */
+    configure_gpio();
+
+    /* Wake each sensor up one by one and set a unique address for each one */
+    if (!init_address(VL53L0X_IDX_FIRST)) {
+        return false;
+    }
+#ifdef VL53L0X_SECOND
+    if (!init_address(VL53L0X_IDX_SECOND)) {
+        return false;
+    }
+#endif
+#ifdef VL53L0X_THIRD
+    if (!init_address(VL53L0X_IDX_THIRD)) {
+        return false;
+    }
+#endif
+
+    return true;
+}
+
+static bool init_config(vl53l0x_idx_t idx)
+{
+    i2c_set_slave_address(vl53l0x_infos[idx].addr);
     if (!data_init()) {
         return false;
     }
@@ -297,8 +394,30 @@ bool vl53l0x_init()
     return true;
 }
 
-bool vl53l0x_read_range_single(uint16_t *range)
+bool vl53l0x_init()
 {
+    if (!init_addresses()) {
+        return false;
+    }
+    if (!init_config(VL53L0X_IDX_FIRST)) {
+        return false;
+    }
+#ifdef VL53L0X_SECOND
+    if (!init_config(VL53L0X_IDX_SECOND)) {
+        return false;
+    }
+#endif
+#ifdef VL53L0X_THIRD
+    if (!init_config(VL53L0X_IDX_THIRD)) {
+        return false;
+    }
+#endif
+    return true;
+}
+
+bool vl53l0x_read_range_single(vl53l0x_idx_t idx, uint16_t *range)
+{
+    i2c_set_slave_address(vl53l0x_infos[idx].addr);
     bool success = i2c_write_addr8_data8(0x80, 0x01);
     success &= i2c_write_addr8_data8(0xFF, 0x01);
     success &= i2c_write_addr8_data8(0x00, 0x00);

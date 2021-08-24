@@ -3,8 +3,8 @@
 #include "drivers/vl6180x.h"
 #include "drivers/vl53l0x.h"
 
-#define VL53L0X_SINGLE
-//#define VL6180X_MUTLIPLE
+#define VL53L0X
+//#define VL61L0X
 
 static void msp430_init()
 {
@@ -17,10 +17,10 @@ static void msp430_init()
 
 int main(void)
 {
-    msp430_init();
-    i2c_init();
+	msp430_init();
+	i2c_init();
 
-#ifdef VL6180X_MUTLIPLE
+#ifdef VL6180X
     bool success = vl6180x_init();
     uint8_t ranges[3] = { 0 };
     while (success) {
@@ -32,12 +32,18 @@ int main(void)
         success &= vl6180x_read_range_single(VL6180X_IDX_THIRD, &ranges[2]);
 #endif
     }
-#elif defined VL53L0X_SINGLE
+#elif defined VL53L0X
     bool success = vl53l0x_init();
-    uint16_t range = 0;
+    uint16_t ranges[3] = { 0 };
     while (success) {
-        success = vl53l0x_read_range_single(&range);
+        success = vl53l0x_read_range_single(VL53L0X_IDX_FIRST, &ranges[0]);
+#ifdef VL53L0X_SECOND
+        success &= vl53l0x_read_range_single(VL53L0X_IDX_SECOND, &ranges[1]);
+#endif
+#ifdef VL53L0X_THIRD
+        success &= vl53l0x_read_range_single(VL53L0X_IDX_THIRD, &ranges[2]);
+#endif
     }
 #endif
-    return 0;
+	return 0;
 }
